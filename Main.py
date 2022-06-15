@@ -3,6 +3,8 @@ from typing import Tuple
 import numpy as np
 import matplotlib.pyplot as plt
 
+import time
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as func
@@ -17,9 +19,9 @@ from tqdm import tqdm
 
 from CocoDataset import CocoDataset
 
-IMAGE_SIZE = (420, 420)
-BATCH_SIZE = 5
-LEARNING_RATE = 0.99
+IMAGE_SIZE = (320, 320)
+BATCH_SIZE = 50
+LEARNING_RATE = 0.01
 EPOCHS = 100
 
 
@@ -28,7 +30,6 @@ def get_transform() -> Compose:
     return transforms.Compose([
         transforms.ToTensor(),
         transforms.Normalize(0.5, 0.5),
-        transforms.Resize(IMAGE_SIZE)
     ])
 
 
@@ -37,8 +38,8 @@ def get_datasets(transform) -> Tuple[CocoDetection, CocoDetection]:
     train_dir = "./dataset/train"
     valid_dir = "./dataset/valid"
 
-    train_datasets = CocoDataset(root=train_dir, annFile=f"{train_dir}/annotations_train.json", transform=transform)
-    valid_datasets = CocoDataset(root=valid_dir, annFile=f"{valid_dir}/annotations_valid.json", transform=transform)
+    train_datasets = CocoDataset(root=train_dir, annFile=f"{train_dir}/_annotations_train.json", transform=transform)
+    valid_datasets = CocoDataset(root=valid_dir, annFile=f"{valid_dir}/_annotations_valid.json", transform=transform)
 
     return train_datasets, valid_datasets
 
@@ -53,7 +54,7 @@ def get_dataloader(train_datasets, valid_datasets, batch_size) -> Tuple[DataLoad
 
 # %%
 class CNN(nn.Module):
-    def __init__(self, n_hidden, n_output):
+    def __init__(self, n_input, n_output, n_hidden):
         super().__init__()
 
         self.layer1 = nn.Sequential(
@@ -74,7 +75,7 @@ class CNN(nn.Module):
             nn.MaxPool2d((2, 2))
         )
 
-        self.l1 = nn.Linear(107584, n_hidden)
+        self.l1 = nn.Linear(n_input, n_hidden)
         self.l2 = nn.Linear(n_hidden, n_output)
         self.relu = nn.ReLU(inplace=True)
 
@@ -92,11 +93,6 @@ class CNN(nn.Module):
     def check_cnn_size(self, x: torch.FloatTensor = torch.FloatTensor(5, 3, IMAGE_SIZE[0], IMAGE_SIZE[1])):
         cnn = self.layer3(self.layer2(self.layer1(x)))
         return torch.flatten(cnn).shape
-
-
-# %%
-def get_labels(targets: list, dataset: CocoDetection):
-    cats = dataset.coco.cats
 
 
 # %%
@@ -178,11 +174,14 @@ def main():
     train_datasets, valid_datasets = get_datasets(get_transform())
     train_loader, valid_loader = get_dataloader(train_datasets, valid_datasets, BATCH_SIZE)
 
-    cnn = CNN(1024, 54)
+    cnn = CNN(50176, 54, 1024 * 3)
     criterion = nn.CrossEntropyLoss()
-    optimizer = optim.Adam(cnn.parameters(), lr=LEARNING_RATE)
+    optimizer = optim.SGD(cnn.parameters(), lr=LEARNING_RATE)
 
     train_model(cnn, train_loader, valid_loader, criterion, optimizer, device)
+
+    save_path = f"./weights/weight-{int(time.time())}.pth"
+    torch.save(cnn.state_dict(), save_path)
 
 
 # %%
