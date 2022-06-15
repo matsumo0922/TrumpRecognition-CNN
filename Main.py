@@ -20,7 +20,7 @@ from CocoDataset import CocoDataset
 IMAGE_SIZE = (420, 420)
 BATCH_SIZE = 5
 LEARNING_RATE = 0.99
-EPOCHS = 300
+EPOCHS = 100
 
 
 # %%
@@ -76,6 +76,7 @@ class CNN(nn.Module):
 
         self.l1 = nn.Linear(107584, n_hidden)
         self.l2 = nn.Linear(n_hidden, n_output)
+        self.relu = nn.ReLU(inplace=True)
 
     def forward(self, x):
         x = self.layer1(x)
@@ -83,6 +84,7 @@ class CNN(nn.Module):
         x = self.layer3(x)
         x = torch.flatten(x, 1)
         x = self.l1(x)
+        x = self.relu(x)
         x = self.l2(x)
 
         return x
@@ -103,7 +105,7 @@ def train_model(
         train_loader: DataLoader,
         valid_loader: DataLoader,
         criterion: nn.CrossEntropyLoss,
-        optimizer: optim.Adam,
+        optimizer: optim.Optimizer,
         device: torch.device
 ):
     history = np.zeros((0, 5))
@@ -176,9 +178,7 @@ def main():
     train_datasets, valid_datasets = get_datasets(get_transform())
     train_loader, valid_loader = get_dataloader(train_datasets, valid_datasets, BATCH_SIZE)
 
-    print(f"train data size: {len(train_datasets)}, test data size: {len(valid_datasets)}")
-
-    cnn = CNN(512, 52)
+    cnn = CNN(1024, 54)
     criterion = nn.CrossEntropyLoss()
     optimizer = optim.Adam(cnn.parameters(), lr=LEARNING_RATE)
 
