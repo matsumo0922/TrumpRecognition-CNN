@@ -30,8 +30,10 @@ CATS = ['Trump', '10C', '10D', '10H', '10S', '2C', '2D', '2H', '2S', '3C', '3D',
 
 IMAGE_SIZE = (320, 320)
 BATCH_SIZE = 50
-LEARNING_RATE = 0.01
-EPOCHS = 250
+LEARNING_RATE = 0.005
+MOMENTUM = 0.9
+WEIGHT_DECAY = 0.005
+EPOCHS = 100
 
 N_INPUT = 50176
 N_OUTPUT = 54
@@ -43,7 +45,9 @@ def get_transform() -> Compose:
         transforms.ToTensor(),
         transforms.Normalize(0.5, 0.5),
         transforms.RandomErasing(0.5, scale=(0.02, 0.35), ratio=(0.3, 0.3)),
-        transforms.ColorJitter(brightness=0.7, contrast=0.7, saturation=0.7),
+        transforms.RandomRotation(degrees=[-45, 45]),
+        transforms.RandomInvert(0.2),
+        # transforms.RandomSolarize(100, 0.2),
         transforms.RandomGrayscale(0.2)
     ])
 
@@ -209,6 +213,8 @@ def show_loss_carve(history: numpy.ndarray):
     plt.legend()
     plt.show()
 
+    plt.savefig(f"./result/loss-{int(time.time())}.jpg")
+
 
 # %%
 def show_accuracy_graph(history: numpy.ndarray):
@@ -220,6 +226,8 @@ def show_accuracy_graph(history: numpy.ndarray):
     plt.title("accuracy")
     plt.legend()
     plt.show()
+
+    plt.savefig(f"./result/accuracy-{int(time.time())}.jpg")
 
 
 # %%
@@ -257,6 +265,8 @@ def show_result(cnn: CNN, valid_loader: DataLoader, device):
 
     plt.show()
 
+    plt.savefig(f"./result/result-{int(time.time())}.jpg")
+
 
 # %%
 def get_predict(path: str, cnn: CNN, device):
@@ -288,7 +298,7 @@ def train():
 
     cnn = CNN(N_INPUT, N_OUTPUT, 1024 * 3)
     criterion = nn.CrossEntropyLoss()
-    optimizer = optim.SGD(cnn.parameters(), lr=LEARNING_RATE)
+    optimizer = optim.SGD(cnn.parameters(), lr=LEARNING_RATE, momentum=MOMENTUM, weight_decay=WEIGHT_DECAY)
 
     history = train_model(cnn, train_loader, valid_loader, criterion, optimizer, device)
 
@@ -304,7 +314,7 @@ def train():
 def predict():
     # print("Enter the path of the PTH file > ", end="")
     # pth_path = input().strip()
-    pth_path = "E:\IntelliJ\Projects\KCS\TrumpRecognition-CNN\weights\weight-1655315116.pth"
+    pth_path = "E:\IntelliJ\Projects\KCS\TrumpRecognition-CNN\weights\weight-1655402582.pth"
 
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
     cnn = CNN(N_INPUT, N_OUTPUT, 1024 * 3)
