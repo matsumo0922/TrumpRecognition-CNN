@@ -15,6 +15,7 @@ import torch.optim as optim
 import torchvision.datasets as datasets
 import torchvision.transforms as transforms
 
+from torchinfo import summary
 from torch.utils.data import DataLoader
 from torchvision.datasets import CocoDetection, ImageFolder
 from torchvision.transforms import Compose
@@ -28,14 +29,14 @@ CATS = ['10C', '10D', '10H', '10S', '11C', '11D', '11H', '11S', '12C', '12D', '1
         '2D', '2H', '2S', '3C', '3D', '3H', '3S', '4C', '4D', '4H', '4S', '5C', '5D', '5H', '5S', '6C', '6D', '6H', '6S', '7C', '7D', '7H', '7S',
         '8C', '8D', '8H', '8S', '9C', '9D', '9H', '9S']
 
-IMAGE_SIZE = (320, 320)
+IMAGE_SIZE = (224, 224)
 BATCH_SIZE = 100
-LEARNING_RATE = 0.0001
+LEARNING_RATE = 0.001
 MOMENTUM = 0.9
-WEIGHT_DECAY = 0.001
-EPOCHS = 50
+WEIGHT_DECAY = 0.005
+EPOCHS = 125
 
-N_INPUT = 50176
+N_INPUT = 15488
 N_OUTPUT = 52
 
 
@@ -43,7 +44,7 @@ N_OUTPUT = 52
 def get_transform(is_train) -> Compose:
     if is_train:
         return transforms.Compose([
-            transforms.Resize((320, 320)),
+            transforms.Resize(IMAGE_SIZE),
             transforms.ToTensor(),
             transforms.Normalize(0.5, 0.5),
             transforms.RandomErasing(0.5, scale=(0.02, 0.3), ratio=(0.3, 0.3)),
@@ -52,7 +53,7 @@ def get_transform(is_train) -> Compose:
         ])
     else:
         return transforms.Compose([
-            transforms.Resize((320, 320)),
+            transforms.Resize(IMAGE_SIZE),
             transforms.ToTensor(),
             transforms.Normalize(0.5, 0.5),
         ])
@@ -88,20 +89,26 @@ class CNN(nn.Module):
         super().__init__()
 
         self.layer1 = nn.Sequential(
-            nn.Conv2d(3, 32, kernel_size=24),
+            nn.Conv2d(3, 32, kernel_size=5),
             FReLU(32),
             nn.MaxPool2d((2, 2))
         )
 
         self.layer2 = nn.Sequential(
-            nn.Conv2d(32, 64, kernel_size=24),
+            nn.Conv2d(32, 64, kernel_size=5),
             FReLU(64),
             nn.MaxPool2d((2, 2))
         )
 
         self.layer3 = nn.Sequential(
-            nn.Conv2d(64, 64, kernel_size=6),
-            FReLU(64),
+            nn.Conv2d(64, 128, kernel_size=5),
+            FReLU(128),
+            nn.MaxPool2d((2, 2))
+        )
+
+        self.layer4 = nn.Sequential(
+            nn.Conv2d(128, 128, kernel_size=3),
+            FReLU(128),
             nn.MaxPool2d((2, 2))
         )
 
@@ -117,6 +124,7 @@ class CNN(nn.Module):
         x = self.layer1(x)
         x = self.layer2(x)
         x = self.layer3(x)
+        x = self.layer4(x)
         x = self.dropout1(x)
         x = torch.flatten(x, 1)
         x = self.l1(x)
@@ -128,8 +136,8 @@ class CNN(nn.Module):
 
         return x
 
-    def check_cnn_size(self, x: torch.FloatTensor = torch.FloatTensor(5, 3, IMAGE_SIZE[0], IMAGE_SIZE[1])):
-        cnn = self.layer3(self.layer2(self.layer1(x)))
+    def check_cnn_size(self, x: torch.FloatTensor):
+        cnn = self.layer4(self.layer3(self.layer2(self.layer1(x))))
         return torch.flatten(cnn).shape
 
 
@@ -186,10 +194,6 @@ def train_model(
                 outputs = cnn(inputs).to(device)
                 loss = criterion(outputs, labels)
 
-            scaler.scale(loss).backward()
-            scaler.step(optimizer)
-            scaler.update()
-
             predicted = torch.max(outputs, 1)[1]
 
             valid_acc += (predicted == labels).sum().item()
@@ -205,6 +209,10 @@ def train_model(
 
         items = np.array([epoch, train_loss, train_acc, valid_loss, valid_acc])
         history = np.vstack((history, items))
+
+        if (epoch + 1) % 10 == 0:
+            show_loss_carve(history)
+            show_accuracy_graph(history)
 
     return history
 
@@ -303,28 +311,28 @@ def train():
     train_datasets, valid_datasets = get_datasets()
     train_loader, valid_loader = get_dataloader(train_datasets, valid_datasets, BATCH_SIZE)
 
-    cnn = CNN(N_INPUT, N_OUTPUT, 1024, 1024)
+    cnn = CNN(N_INPUT, N_OUTPUT, 1024, 512)
     criterion = nn.CrossEntropyLoss()
     optimizer = optim.SGD(cnn.parameters(), lr=LEARNING_RATE, momentum=MOMENTUM, weight_decay=WEIGHT_DECAY)
 
     history = train_model(cnn, train_loader, valid_loader, criterion, optimizer, device)
 
+    save_path = f"./weights/weight-{int(time.time())}.pth"
+    torch.save(cnn.state_dict(), save_path)
+
     show_loss_carve(history)
     show_accuracy_graph(history)
     show_result(cnn, valid_loader, device)
-
-    save_path = f"./weights/weight-{int(time.time())}.pth"
-    torch.save(cnn.state_dict(), save_path)
 
 
 # %%
 def predict():
     # print("Enter the path of the PTH file > ", end="")
     # pth_path = input().strip()
-    pth_path = "E:\IntelliJ\Projects\KCS\TrumpRecognition-CNN\weights\weight-1655573797.pth"
+    pth_path = "E:\IntelliJ\Projects\KCS\TrumpRecognition-CNN\weights\weight-1655617999.pth"
 
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
-    cnn = CNN(N_INPUT, N_OUTPUT, 1024, 1024)
+    cnn = CNN(N_INPUT, N_OUTPUT, 1024, 512)
     cnn.load_state_dict(torch.load(pth_path))
 
     while True:
@@ -340,14 +348,25 @@ def predict():
 
 
 # %%
+def info():
+    device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+    cnn = CNN(N_INPUT, N_OUTPUT, 1024, 512).to(device)
+
+    print(cnn.check_cnn_size(torch.FloatTensor(1, 3, IMAGE_SIZE[0], IMAGE_SIZE[1]).to(device)))
+    print(summary(model=cnn, input_size=(5, 3, IMAGE_SIZE[0], IMAGE_SIZE[1])))
+
+
+# %%
 def main():
-    print("Choose between predict mode [P] and train mode [T] > ", end="")
+    print("Choose mode predict mode [P], train mode [T] or info mode [I]: > ", end="")
     mode = input().strip()
 
     if mode.upper() == "P":
         predict()
     elif mode.upper() == "T":
         train()
+    elif mode.upper() == "I":
+        info()
     else:
         print("Invalid input. ")
 
