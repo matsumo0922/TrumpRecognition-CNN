@@ -16,7 +16,7 @@ import torchvision.datasets as datasets
 import torchvision.transforms as transforms
 
 from torch.utils.data import DataLoader
-from torchvision.datasets import CocoDetection
+from torchvision.datasets import CocoDetection, ImageFolder
 from torchvision.transforms import Compose
 from PIL import Image
 from tqdm import tqdm
@@ -24,49 +24,55 @@ from tqdm import tqdm
 from CocoDataset import CocoDataset
 from FReLU import FReLU
 
-CATS = ['Trump', '10C', '10D', '10H', '10S', '2C', '2D', '2H', '2S', '3C', '3D', '3H', '3S', '4C', '4D', '4H', '4S', '5C', '5D', '5H', '5S', '6C',
-        '6D', '6H', '6S', '7C', '7D', '7H', '7S', '8C', '8D', '8H', '8S', '9C', '9D', '9H', '9S', 'AC', 'AD', 'AH', 'AS', 'JC', 'JD', 'JH', 'JOKER',
-        'JS', 'KC', 'KD', 'KH', 'KS', 'QC', 'QD', 'QH', 'QS']
+CATS = ['10C', '10D', '10H', '10S', '11C', '11D', '11H', '11S', '12C', '12D', '12H', '12S', '13C', '13D', '13H', '13S', '1C', '1D', '1H', '1S', '2C',
+        '2D', '2H', '2S', '3C', '3D', '3H', '3S', '4C', '4D', '4H', '4S', '5C', '5D', '5H', '5S', '6C', '6D', '6H', '6S', '7C', '7D', '7H', '7S',
+        '8C', '8D', '8H', '8S', '9C', '9D', '9H', '9S']
 
 IMAGE_SIZE = (320, 320)
-BATCH_SIZE = 50
-LEARNING_RATE = 0.005
+BATCH_SIZE = 100
+LEARNING_RATE = 0.0001
 MOMENTUM = 0.9
-WEIGHT_DECAY = 0.005
-EPOCHS = 100
+WEIGHT_DECAY = 0.001
+EPOCHS = 50
 
 N_INPUT = 50176
-N_OUTPUT = 54
+N_OUTPUT = 52
 
 
 # %%
-def get_transform() -> Compose:
-    return transforms.Compose([
-        transforms.ToTensor(),
-        transforms.Normalize(0.5, 0.5),
-        transforms.RandomErasing(0.5, scale=(0.02, 0.35), ratio=(0.3, 0.3)),
-        transforms.RandomRotation(degrees=[-45, 45]),
-        transforms.RandomInvert(0.2),
-        # transforms.RandomSolarize(100, 0.2),
-        transforms.RandomGrayscale(0.2)
-    ])
+def get_transform(is_train) -> Compose:
+    if is_train:
+        return transforms.Compose([
+            transforms.Resize((320, 320)),
+            transforms.ToTensor(),
+            transforms.Normalize(0.5, 0.5),
+            transforms.RandomErasing(0.5, scale=(0.02, 0.3), ratio=(0.3, 0.3)),
+            transforms.RandomPerspective(distortion_scale=0.5, p=0.2),
+            transforms.RandomGrayscale(0.5)
+        ])
+    else:
+        return transforms.Compose([
+            transforms.Resize((320, 320)),
+            transforms.ToTensor(),
+            transforms.Normalize(0.5, 0.5),
+        ])
 
 
 # %%
-def get_datasets(transform) -> Tuple[CocoDetection, CocoDetection]:
+def get_datasets() -> Tuple[ImageFolder, ImageFolder]:
     train_dir = "./dataset/train"
     valid_dir = "./dataset/valid"
 
-    train_datasets = CocoDataset(root=train_dir, annFile=f"{train_dir}/_annotations_train.json", transform=transform)
-    valid_datasets = CocoDataset(root=valid_dir, annFile=f"{valid_dir}/_annotations_valid.json", transform=transform)
+    train_datasets = ImageFolder(root=train_dir, transform=get_transform(True))
+    valid_datasets = ImageFolder(root=valid_dir, transform=get_transform(False))
 
     return train_datasets, valid_datasets
 
 
 # %%
 def get_dataloader(train_datasets, valid_datasets, batch_size) -> Tuple[DataLoader, DataLoader]:
-    train_loader = DataLoader(train_datasets, batch_size=batch_size, num_workers=2, pin_memory=True, shuffle=True)
-    valid_loader = DataLoader(valid_datasets, batch_size=batch_size, num_workers=2, pin_memory=True)
+    train_loader = DataLoader(train_datasets, batch_size=batch_size, num_workers=4, pin_memory=True, shuffle=True)
+    valid_loader = DataLoader(valid_datasets, batch_size=batch_size, num_workers=4, pin_memory=True, shuffle=True)
 
     return train_loader, valid_loader
 
@@ -78,42 +84,47 @@ def get_cats(coco_datasets: CocoDataset):
 
 # %%
 class CNN(nn.Module):
-    def __init__(self, n_input, n_output, n_hidden):
+    def __init__(self, n_input, n_output, n_hidden1, n_hidden2):
         super().__init__()
 
         self.layer1 = nn.Sequential(
             nn.Conv2d(3, 32, kernel_size=24),
-            nn.BatchNorm2d(32),
-            nn.ReLU(inplace=True),
+            FReLU(32),
             nn.MaxPool2d((2, 2))
         )
 
         self.layer2 = nn.Sequential(
             nn.Conv2d(32, 64, kernel_size=24),
-            nn.BatchNorm2d(64),
-            nn.ReLU(inplace=True),
+            FReLU(64),
             nn.MaxPool2d((2, 2))
         )
 
         self.layer3 = nn.Sequential(
             nn.Conv2d(64, 64, kernel_size=6),
-            nn.BatchNorm2d(64),
-            nn.ReLU(inplace=True),
+            FReLU(64),
             nn.MaxPool2d((2, 2))
         )
 
-        self.l1 = nn.Linear(n_input, n_hidden)
-        self.l2 = nn.Linear(n_hidden, n_output)
+        self.dropout1 = nn.Dropout2d(p=0.3)
+        self.dropout2 = nn.Dropout(p=0.5)
+
+        self.l1 = nn.Linear(n_input, n_hidden1)
+        self.l2 = nn.Linear(n_hidden1, n_hidden2)
+        self.l3 = nn.Linear(n_hidden2, n_output)
         self.relu = nn.ReLU(inplace=True)
 
     def forward(self, x):
         x = self.layer1(x)
         x = self.layer2(x)
         x = self.layer3(x)
+        x = self.dropout1(x)
         x = torch.flatten(x, 1)
         x = self.l1(x)
         x = self.relu(x)
+        x = self.dropout2(x)
         x = self.l2(x)
+        x = self.relu(x)
+        x = self.l3(x)
 
         return x
 
@@ -145,8 +156,6 @@ def train_model(
         for inputs, labels in tqdm(train_loader):
             num_trained += len(labels)
 
-            labels = labels.type(torch.LongTensor)
-
             inputs = inputs.to(device)
             labels = labels.to(device)
 
@@ -169,8 +178,6 @@ def train_model(
 
         for inputs, labels in valid_loader:
             num_tested += len(labels)
-
-            labels = labels.type(torch.LongTensor)
 
             inputs = inputs.to(device)
             labels = labels.to(device)
@@ -211,9 +218,9 @@ def show_loss_carve(history: numpy.ndarray):
     plt.ylabel("loss")
     plt.title("loss carve")
     plt.legend()
-    plt.show()
 
     plt.savefig(f"./result/loss-{int(time.time())}.jpg")
+    plt.show()
 
 
 # %%
@@ -225,9 +232,9 @@ def show_accuracy_graph(history: numpy.ndarray):
     plt.ylabel("acc")
     plt.title("accuracy")
     plt.legend()
-    plt.show()
 
     plt.savefig(f"./result/accuracy-{int(time.time())}.jpg")
+    plt.show()
 
 
 # %%
@@ -238,12 +245,11 @@ def show_result(cnn: CNN, valid_loader: DataLoader, device):
     cnn.to(device)
     cnn.eval()
 
-    labels = labels.type(torch.LongTensor)
     test_labels = labels.to(device)
     test_images = images.to(device)
 
     outputs = cnn(test_images).to(device)
-    predicted = torch.max(outputs, 1)[1]
+    predicts = torch.max(outputs, 1)[1]
 
     plt.figure(figsize=(21, 15))
 
@@ -251,7 +257,7 @@ def show_result(cnn: CNN, valid_loader: DataLoader, device):
         ax = plt.subplot(5, 10, index + 1)
 
         answer_label = CATS[test_labels[index].item()]
-        predicted_label = CATS[predicted[index].item()]
+        predicted_label = CATS[predicts[index].item()]
 
         color = "k" if answer_label == predicted_label else "b"
         ax.set_title(f"{answer_label}:{predicted_label}", c=color, fontsize=20)
@@ -263,20 +269,19 @@ def show_result(cnn: CNN, valid_loader: DataLoader, device):
         plt.imshow(image)
         ax.set_axis_off()
 
-    plt.show()
-
     plt.savefig(f"./result/result-{int(time.time())}.jpg")
+    plt.show()
 
 
 # %%
 def get_predict(path: str, cnn: CNN, device):
     transform = transforms.Compose([
+        transforms.Resize((320, 320)),
         transforms.ToTensor(),
     ])
 
     image = Image.open(path)
     image = image.convert("RGB")
-    image = image.resize(IMAGE_SIZE)
     image = transform(image)
     image = image.unsqueeze(0).to(device)
 
@@ -284,19 +289,21 @@ def get_predict(path: str, cnn: CNN, device):
     cnn.eval()
 
     output = cnn(image)
-    predicted = torch.max(output, 1)[1]
+    output = output.tolist()[0]
+    output = list(enumerate(output))
+    output = sorted(output, key=lambda x: x[1], reverse=True)
 
-    return CATS[predicted.item()]
+    return output
 
 
 # %%
 def train():
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
-    train_datasets, valid_datasets = get_datasets(get_transform())
+    train_datasets, valid_datasets = get_datasets()
     train_loader, valid_loader = get_dataloader(train_datasets, valid_datasets, BATCH_SIZE)
 
-    cnn = CNN(N_INPUT, N_OUTPUT, 1024 * 3)
+    cnn = CNN(N_INPUT, N_OUTPUT, 1024, 1024)
     criterion = nn.CrossEntropyLoss()
     optimizer = optim.SGD(cnn.parameters(), lr=LEARNING_RATE, momentum=MOMENTUM, weight_decay=WEIGHT_DECAY)
 
@@ -314,10 +321,10 @@ def train():
 def predict():
     # print("Enter the path of the PTH file > ", end="")
     # pth_path = input().strip()
-    pth_path = "E:\IntelliJ\Projects\KCS\TrumpRecognition-CNN\weights\weight-1655402582.pth"
+    pth_path = "E:\IntelliJ\Projects\KCS\TrumpRecognition-CNN\weights\weight-1655573797.pth"
 
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
-    cnn = CNN(N_INPUT, N_OUTPUT, 1024 * 3)
+    cnn = CNN(N_INPUT, N_OUTPUT, 1024, 1024)
     cnn.load_state_dict(torch.load(pth_path))
 
     while True:
@@ -328,7 +335,8 @@ def predict():
             print("Ended the process.")
             break
 
-        print(f"Result > {get_predict(image_path, cnn, device)}")
+        result = get_predict(image_path, cnn, device)
+        print(f"Result > {list(map(lambda x: (CATS[x[0]], x[1]), result[:5]))}")
 
 
 # %%
