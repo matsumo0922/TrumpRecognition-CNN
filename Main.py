@@ -34,9 +34,10 @@ BATCH_SIZE = 100
 LEARNING_RATE = 0.001
 MOMENTUM = 0.9
 WEIGHT_DECAY = 0.005
-EPOCHS = 125
+EPOCHS = 50
 
-N_INPUT = 15488
+N_INPUT = 160
+N_HIDDEN = 256
 N_OUTPUT = 52
 
 
@@ -48,8 +49,7 @@ def get_transform(is_train) -> Compose:
             transforms.ToTensor(),
             transforms.Normalize(0.5, 0.5),
             transforms.RandomErasing(0.5, scale=(0.02, 0.3), ratio=(0.3, 0.3)),
-            transforms.RandomPerspective(distortion_scale=0.5, p=0.2),
-            transforms.RandomGrayscale(0.5)
+            # transforms.RandomPerspective(distortion_scale=0.3, p=0.2)
         ])
     else:
         return transforms.Compose([
@@ -84,61 +84,145 @@ def get_cats(coco_datasets: CocoDataset):
 
 
 # %%
+class Conv(nn.Module):
+    def __init__(self, in_ch, out_ch, activation, kernel_size=1, stride=1, padding=0):
+        super().__init__()
+        self.conv = nn.Conv2d(in_ch, out_ch, kernel_size, stride, padding, 1, bias=False)
+        self.norm = nn.BatchNorm2d(out_ch, 0.001, 0.01)
+        self.relu = activation
+
+    def forward(self, x):
+        return self.relu(self.norm(self.conv(x)))
+
+
+class DiffBlock(nn.Module):
+    def __init__(self, conv_input_ch, conv_output_ch, identity_conv=None, stride=1):
+        super(DiffBlock, self).__init__()
+
+        self.conv1 = Conv(conv_input_ch, conv_output_ch, nn.ReLU(), kernel_size=1, stride=1)
+        self.conv2 = Conv(conv_output_ch, conv_output_ch, nn.ReLU(), kernel_size=3, stride=stride)
+        self.conv3 = Conv(conv_output_ch, conv_output_ch * 4, None, kernel_size=1, stride=1)
+        self.relu = nn.ReLU()
+        self.identity_conv = identity_conv
+
+    def forward(self, x):
+        identity = x.clone()
+
+        x = self.conv1(x)
+        x = self.conv2(x)
+        x = self.conv3(x)
+
+        if self.identity_conv is not None:
+            identity = self.identity_conv(identity)
+
+        x += identity
+
+        return self.relu(x)
+
+
+class ResNet(nn.Module):
+    def __init__(self, diff_block, n_classes):
+        super(ResNet, self).__init__()
+
+        self.conv1 = Conv(3, 64, nn.ReLU(), kernel_size=7, stride=2, padding=3)
+        self.conv2_x = self.get_layer(diff_block, n_blocks=3, block_input_ch=64, first_conv_output_ch=64, stride=1)
+        self.conv3_x = self.get_layer(diff_block, n_blocks=4, block_input_ch=256, first_conv_output_ch=128, stride=2)
+        self.conv4_x = self.get_layer(diff_block, n_blocks=6, block_input_ch=512, first_conv_output_ch=256, stride=2)
+        self.conv5_x = self.get_layer(diff_block, n_blocks=3, block_input_ch=1024, first_conv_output_ch=512, stride=2)
+
+        self.max_pooling = nn.MaxPool2d(kernel_size=3, stride=2, padding=1)
+        self.avg_pooling = nn.AdaptiveAvgPool2d((1, 1))
+
+        self.linear = nn.Linear(512 * 4, n_classes)
+
+    def forward(self, x):
+        x = self.conv1(x)
+        x = self.max_pooling(x)
+
+        x = self.conv2_x(x)
+        x = self.conv3_x(x)
+        x = self.conv4_x(x)
+        x = self.conv5_x(x)
+
+        x = self.avg_pooling(x)
+        x = x.reshape(x.shape[0], 1)
+        x = self.linear(x)
+
+        return x
+
+    def get_layer(self, diff_block, n_blocks, block_input_ch, first_conv_output_ch, stride):
+        layers = list()
+
+        identity_conv = nn.Conv2d(block_input_ch, first_conv_output_ch * 4, kernel_size=1, stride=stride)
+        layers.append(diff_block(block_input_ch, first_conv_output_ch, identity_conv=identity_conv, stride=stride))
+
+        next_input_ch = first_conv_output_ch * 4
+
+        for i in range(n_blocks - 1):
+            layers.append(diff_block(next_input_ch, first_conv_output_ch))
+
+        return nn.Sequential(*layers)
+
+
+# %%
 class CNN(nn.Module):
-    def __init__(self, n_input, n_output, n_hidden1, n_hidden2):
+    def __init__(self, n_input, n_output, n_hidden1):
         super().__init__()
 
-        self.layer1 = nn.Sequential(
-            nn.Conv2d(3, 32, kernel_size=5),
-            FReLU(32),
-            nn.MaxPool2d((2, 2))
-        )
+        filters = [3, 24, 48, 64, 128, 160, 256, 256]
 
-        self.layer2 = nn.Sequential(
-            nn.Conv2d(32, 64, kernel_size=5),
-            FReLU(64),
-            nn.MaxPool2d((2, 2))
-        )
-
-        self.layer3 = nn.Sequential(
-            nn.Conv2d(64, 128, kernel_size=5),
-            FReLU(128),
-            nn.MaxPool2d((2, 2))
-        )
-
-        self.layer4 = nn.Sequential(
-            nn.Conv2d(128, 128, kernel_size=3),
-            FReLU(128),
-            nn.MaxPool2d((2, 2))
-        )
-
-        self.dropout1 = nn.Dropout2d(p=0.3)
-        self.dropout2 = nn.Dropout(p=0.5)
+        self.layer1 = get_layer(filters[0], filters[1], 3, False)
+        self.layer2 = get_layer(filters[1], filters[2], 3)
+        self.layer3 = get_layer(filters[2], filters[3], 3, False)
+        self.layer4 = get_layer(filters[3], filters[4], 3)
+        self.layer5 = get_layer(filters[4], filters[5], 3)
 
         self.l1 = nn.Linear(n_input, n_hidden1)
-        self.l2 = nn.Linear(n_hidden1, n_hidden2)
-        self.l3 = nn.Linear(n_hidden2, n_output)
+        self.l2 = nn.Linear(n_hidden1, n_output)
+
         self.relu = nn.ReLU(inplace=True)
+        self.dropout = nn.Dropout(p=0.3)
 
     def forward(self, x):
         x = self.layer1(x)
         x = self.layer2(x)
         x = self.layer3(x)
         x = self.layer4(x)
-        x = self.dropout1(x)
+        x = self.layer5(x)
+
+        x = nn.functional.adaptive_max_pool2d(x, (1, 1))
         x = torch.flatten(x, 1)
+
         x = self.l1(x)
         x = self.relu(x)
-        x = self.dropout2(x)
+        x = self.dropout(x)
         x = self.l2(x)
-        x = self.relu(x)
-        x = self.l3(x)
 
         return x
 
     def check_cnn_size(self, x: torch.FloatTensor):
-        cnn = self.layer4(self.layer3(self.layer2(self.layer1(x))))
-        return torch.flatten(cnn).shape
+        x = self.layer1(x)
+        x = self.layer2(x)
+        x = self.layer3(x)
+        x = self.layer4(x)
+        x = self.layer5(x)
+        x = nn.functional.adaptive_max_pool2d(x, (1, 1))
+
+        return torch.flatten(x).shape
+
+
+# %%
+def get_layer(n_input, n_output, kernel_size, stride=1, is_pooling=True):
+    param = [
+        nn.Conv2d(n_input, n_output, kernel_size=kernel_size, stride=stride),
+        nn.BatchNorm2d(n_output),
+        nn.ReLU(),
+    ]
+
+    if is_pooling:
+        param.append(nn.MaxPool2d((2, 2)))
+
+    return nn.Sequential(*param)
 
 
 # %%
@@ -311,9 +395,11 @@ def train():
     train_datasets, valid_datasets = get_datasets()
     train_loader, valid_loader = get_dataloader(train_datasets, valid_datasets, BATCH_SIZE)
 
-    cnn = CNN(N_INPUT, N_OUTPUT, 1024, 512)
+    print(f"train data: {len(train_datasets)}, valid data: {len(valid_datasets)}")
+
+    cnn = CNN(N_INPUT, N_OUTPUT, N_HIDDEN)
     criterion = nn.CrossEntropyLoss()
-    optimizer = optim.SGD(cnn.parameters(), lr=LEARNING_RATE, momentum=MOMENTUM, weight_decay=WEIGHT_DECAY)
+    optimizer = optim.RAdam(cnn.parameters(), lr=LEARNING_RATE, betas=(0.9, 0.999))
 
     history = train_model(cnn, train_loader, valid_loader, criterion, optimizer, device)
 
@@ -332,7 +418,7 @@ def predict():
     pth_path = "E:\IntelliJ\Projects\KCS\TrumpRecognition-CNN\weights\weight-1655617999.pth"
 
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
-    cnn = CNN(N_INPUT, N_OUTPUT, 1024, 512)
+    cnn = CNN(N_INPUT, N_OUTPUT, N_HIDDEN)
     cnn.load_state_dict(torch.load(pth_path))
 
     while True:
@@ -350,7 +436,7 @@ def predict():
 # %%
 def info():
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
-    cnn = CNN(N_INPUT, N_OUTPUT, 1024, 512).to(device)
+    cnn = CNN(N_INPUT, N_OUTPUT, N_HIDDEN).to(device)
 
     print(cnn.check_cnn_size(torch.FloatTensor(1, 3, IMAGE_SIZE[0], IMAGE_SIZE[1]).to(device)))
     print(summary(model=cnn, input_size=(5, 3, IMAGE_SIZE[0], IMAGE_SIZE[1])))
