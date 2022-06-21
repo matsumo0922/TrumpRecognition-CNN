@@ -30,7 +30,7 @@ CATS = ['10C', '10D', '10H', '10S', '11C', '11D', '11H', '11S', '12C', '12D', '1
         '8C', '8D', '8H', '8S', '9C', '9D', '9H', '9S']
 
 IMAGE_SIZE = (224, 224)
-BATCH_SIZE = 50
+BATCH_SIZE = 64
 LEARNING_RATE = 0.001
 MOMENTUM = 0.9
 WEIGHT_DECAY = 0.005
@@ -48,7 +48,7 @@ def get_transform(is_train) -> Compose:
             transforms.Resize(IMAGE_SIZE),
             transforms.ToTensor(),
             transforms.Normalize(0.5, 0.5),
-            transforms.RandomErasing(0.5, scale=(0.02, 0.3), ratio=(0.3, 0.3)),
+            # transforms.RandomErasing(0.5, scale=(0.02, 0.3), ratio=(0.3, 0.3)),
             # transforms.RandomPerspective(distortion_scale=0.3, p=0.2)
         ])
     else:
@@ -87,8 +87,8 @@ def get_cats(coco_datasets: CocoDataset):
 class Conv(nn.Module):
     def __init__(self, in_ch, out_ch, activation, kernel_size=1, stride=1, padding=0):
         super().__init__()
-        self.conv = nn.Conv2d(in_ch, out_ch, kernel_size, stride, padding, 1, bias=False)
-        self.norm = nn.BatchNorm2d(out_ch, 0.001, 0.01)
+        self.conv = nn.Conv2d(in_ch, out_ch, kernel_size, stride, padding, bias=False)
+        self.norm = nn.BatchNorm2d(out_ch)
         self.relu = activation
 
     def forward(self, x):
@@ -230,7 +230,7 @@ def train_model(
         valid_acc /= num_tested
         valid_loss *= (BATCH_SIZE / num_tested)
 
-        print(f"Epoch [{epoch + 1}/{EPOCHS}, loss: {train_loss:.5f}, acc: {train_acc:.5f}, valid loss: {valid_loss:.5f}, valid acc: {valid_acc:.5f} (trained: {num_tested}, tested: {num_tested})")
+        print(f"Epoch [{epoch + 1}/{EPOCHS}, loss: {train_loss:.5f}, acc: {train_acc:.5f}, valid loss: {valid_loss:.5f}, valid acc: {valid_acc:.5f} (trained: {num_trained}, tested: {num_tested})")
 
         items = np.array([epoch, train_loss, train_acc, valid_loss, valid_acc])
         history = np.vstack((history, items))
@@ -340,7 +340,7 @@ def train():
 
     net = ResNet(DiffBlock, N_OUTPUT)
     criterion = nn.CrossEntropyLoss()
-    optimizer = optim.RAdam(net.parameters(), lr=LEARNING_RATE, betas=(0.9, 0.999))
+    optimizer = optim.SGD(net.parameters(), lr=LEARNING_RATE, momentum=MOMENTUM)
 
     history = train_model(net, train_loader, valid_loader, criterion, optimizer, device)
 
@@ -371,7 +371,7 @@ def predict():
             break
 
         result = get_predict(image_path, net, device)
-        print(f"Result > {list(map(lambda x: (CATS[x[0]], x[1]), result[:5]))}")
+        print(f"Result > {list(map(lambda x: (CATS[x[0]], x[1]), result[:7]))}")
 
 
 # %%
@@ -381,7 +381,7 @@ def info():
     tensor = torch.FloatTensor(1, 3, IMAGE_SIZE[0], IMAGE_SIZE[1]).to(device)
 
     print(net(tensor).to(device).shape)
-    print(summary(model=net, input_size=(5, 3, IMAGE_SIZE[0], IMAGE_SIZE[1])))
+    print(summary(model=net, input_size=(BATCH_SIZE, 3, IMAGE_SIZE[0], IMAGE_SIZE[1])))
 
 
 # %%
