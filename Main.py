@@ -30,7 +30,7 @@ CATS = ['10C', '10D', '10H', '10S', '11C', '11D', '11H', '11S', '12C', '12D', '1
         '8C', '8D', '8H', '8S', '9C', '9D', '9H', '9S']
 
 IMAGE_SIZE = (224, 224)
-BATCH_SIZE = 100
+BATCH_SIZE = 50
 LEARNING_RATE = 0.001
 MOMENTUM = 0.9
 WEIGHT_DECAY = 0.005
@@ -92,7 +92,7 @@ class Conv(nn.Module):
         self.relu = activation
 
     def forward(self, x):
-        return self.relu(self.norm(self.conv(x)))
+        return self.relu(self.norm(self.conv(x))) if self.relu is not None else self.norm(self.conv(x))
 
 
 class DiffBlock(nn.Module):
@@ -100,7 +100,7 @@ class DiffBlock(nn.Module):
         super(DiffBlock, self).__init__()
 
         self.conv1 = Conv(conv_input_ch, conv_output_ch, nn.ReLU(), kernel_size=1, stride=1)
-        self.conv2 = Conv(conv_output_ch, conv_output_ch, nn.ReLU(), kernel_size=3, stride=stride)
+        self.conv2 = Conv(conv_output_ch, conv_output_ch, nn.ReLU(), kernel_size=3, stride=stride, padding=1)
         self.conv3 = Conv(conv_output_ch, conv_output_ch * 4, None, kernel_size=1, stride=1)
         self.relu = nn.ReLU()
         self.identity_conv = identity_conv
@@ -124,11 +124,13 @@ class ResNet(nn.Module):
     def __init__(self, diff_block, n_classes):
         super(ResNet, self).__init__()
 
+        self.input_channels = 64
+
         self.conv1 = Conv(3, 64, nn.ReLU(), kernel_size=7, stride=2, padding=3)
-        self.conv2_x = self.get_layer(diff_block, n_blocks=3, block_input_ch=64, first_conv_output_ch=64, stride=1)
-        self.conv3_x = self.get_layer(diff_block, n_blocks=4, block_input_ch=256, first_conv_output_ch=128, stride=2)
-        self.conv4_x = self.get_layer(diff_block, n_blocks=6, block_input_ch=512, first_conv_output_ch=256, stride=2)
-        self.conv5_x = self.get_layer(diff_block, n_blocks=3, block_input_ch=1024, first_conv_output_ch=512, stride=2)
+        self.conv2_x = self.get_layer(diff_block, n_blocks=3, first_conv_output_ch=64, stride=1)
+        self.conv3_x = self.get_layer(diff_block, n_blocks=4, first_conv_output_ch=128, stride=2)
+        self.conv4_x = self.get_layer(diff_block, n_blocks=6, first_conv_output_ch=256, stride=2)
+        self.conv5_x = self.get_layer(diff_block, n_blocks=3, first_conv_output_ch=512, stride=2)
 
         self.max_pooling = nn.MaxPool2d(kernel_size=3, stride=2, padding=1)
         self.avg_pooling = nn.AdaptiveAvgPool2d((1, 1))
@@ -145,89 +147,28 @@ class ResNet(nn.Module):
         x = self.conv5_x(x)
 
         x = self.avg_pooling(x)
-        x = x.reshape(x.shape[0], 1)
+        x = x.reshape(x.shape[0], -1)
         x = self.linear(x)
 
         return x
 
-    def get_layer(self, diff_block, n_blocks, block_input_ch, first_conv_output_ch, stride):
+    def get_layer(self, diff_block, n_blocks, first_conv_output_ch, stride):
         layers = list()
 
-        identity_conv = nn.Conv2d(block_input_ch, first_conv_output_ch * 4, kernel_size=1, stride=stride)
-        layers.append(diff_block(block_input_ch, first_conv_output_ch, identity_conv=identity_conv, stride=stride))
+        identity_conv = nn.Conv2d(self.input_channels, first_conv_output_ch * 4, kernel_size=1, stride=stride)
+        layers.append(diff_block(self.input_channels, first_conv_output_ch, identity_conv=identity_conv, stride=stride))
 
-        next_input_ch = first_conv_output_ch * 4
+        self.input_channels = first_conv_output_ch * 4
 
         for i in range(n_blocks - 1):
-            layers.append(diff_block(next_input_ch, first_conv_output_ch))
+            layers.append(diff_block(self.input_channels, first_conv_output_ch))
 
         return nn.Sequential(*layers)
 
 
 # %%
-class CNN(nn.Module):
-    def __init__(self, n_input, n_output, n_hidden1):
-        super().__init__()
-
-        filters = [3, 24, 48, 64, 128, 160, 256, 256]
-
-        self.layer1 = get_layer(filters[0], filters[1], 3, False)
-        self.layer2 = get_layer(filters[1], filters[2], 3)
-        self.layer3 = get_layer(filters[2], filters[3], 3, False)
-        self.layer4 = get_layer(filters[3], filters[4], 3)
-        self.layer5 = get_layer(filters[4], filters[5], 3)
-
-        self.l1 = nn.Linear(n_input, n_hidden1)
-        self.l2 = nn.Linear(n_hidden1, n_output)
-
-        self.relu = nn.ReLU(inplace=True)
-        self.dropout = nn.Dropout(p=0.3)
-
-    def forward(self, x):
-        x = self.layer1(x)
-        x = self.layer2(x)
-        x = self.layer3(x)
-        x = self.layer4(x)
-        x = self.layer5(x)
-
-        x = nn.functional.adaptive_max_pool2d(x, (1, 1))
-        x = torch.flatten(x, 1)
-
-        x = self.l1(x)
-        x = self.relu(x)
-        x = self.dropout(x)
-        x = self.l2(x)
-
-        return x
-
-    def check_cnn_size(self, x: torch.FloatTensor):
-        x = self.layer1(x)
-        x = self.layer2(x)
-        x = self.layer3(x)
-        x = self.layer4(x)
-        x = self.layer5(x)
-        x = nn.functional.adaptive_max_pool2d(x, (1, 1))
-
-        return torch.flatten(x).shape
-
-
-# %%
-def get_layer(n_input, n_output, kernel_size, stride=1, is_pooling=True):
-    param = [
-        nn.Conv2d(n_input, n_output, kernel_size=kernel_size, stride=stride),
-        nn.BatchNorm2d(n_output),
-        nn.ReLU(),
-    ]
-
-    if is_pooling:
-        param.append(nn.MaxPool2d((2, 2)))
-
-    return nn.Sequential(*param)
-
-
-# %%
 def train_model(
-        cnn: CNN,
+        net: ResNet,
         train_loader: DataLoader,
         valid_loader: DataLoader,
         criterion: nn.CrossEntropyLoss,
@@ -236,14 +177,14 @@ def train_model(
 ):
     history = np.zeros((0, 5))
     scaler = amp.GradScaler()
-    cnn.to(device)
+    net.to(device)
 
     for epoch in range(EPOCHS):
         train_acc, train_loss = 0.0, 0.0
         valid_acc, valid_loss = 0.0, 0.0
         num_trained, num_tested = 0.0, 0.0
 
-        cnn.train()
+        net.train()
 
         for inputs, labels in tqdm(train_loader):
             num_trained += len(labels)
@@ -254,7 +195,7 @@ def train_model(
             optimizer.zero_grad()
 
             with amp.autocast():
-                outputs = cnn(inputs).to(device)
+                outputs = net(inputs).to(device)
                 loss = criterion(outputs, labels)
 
             scaler.scale(loss).backward()
@@ -266,22 +207,22 @@ def train_model(
             train_acc += (predicted == labels).sum().item()
             train_loss += loss.item()
 
-        cnn.eval()
+        net.eval()
 
-        for inputs, labels in valid_loader:
-            num_tested += len(labels)
+        for v_inputs, v_labels in valid_loader:
+            num_tested += len(v_labels)
 
-            inputs = inputs.to(device)
-            labels = labels.to(device)
+            v_inputs = v_inputs.to(device)
+            v_labels = v_labels.to(device)
 
             with amp.autocast():
-                outputs = cnn(inputs).to(device)
-                loss = criterion(outputs, labels)
+                v_outputs = net(v_inputs).to(device)
+                v_loss = criterion(v_outputs, v_labels)
 
-            predicted = torch.max(outputs, 1)[1]
+            v_predicted = torch.max(v_outputs, 1)[1]
 
-            valid_acc += (predicted == labels).sum().item()
-            valid_loss += loss.item()
+            valid_acc += (v_predicted == v_labels).sum().item()
+            valid_loss += v_loss.item()
 
         train_acc /= num_trained
         train_loss *= (BATCH_SIZE / num_trained)
@@ -289,7 +230,7 @@ def train_model(
         valid_acc /= num_tested
         valid_loss *= (BATCH_SIZE / num_tested)
 
-        print(f"Epoch [{epoch + 1}/{EPOCHS}, loss: {train_loss:.5f}, acc: {train_acc:.5f}, valid loss: {valid_loss:.5f}, valid acc: {valid_acc:.5f}")
+        print(f"Epoch [{epoch + 1}/{EPOCHS}, loss: {train_loss:.5f}, acc: {train_acc:.5f}, valid loss: {valid_loss:.5f}, valid acc: {valid_acc:.5f} (trained: {num_tested}, tested: {num_tested})")
 
         items = np.array([epoch, train_loss, train_acc, valid_loss, valid_acc])
         history = np.vstack((history, items))
@@ -330,17 +271,17 @@ def show_accuracy_graph(history: numpy.ndarray):
 
 
 # %%
-def show_result(cnn: CNN, valid_loader: DataLoader, device):
+def show_result(net: ResNet, valid_loader: DataLoader, device):
     for images, labels in valid_loader:
         break
 
-    cnn.to(device)
-    cnn.eval()
+    net.to(device)
+    net.eval()
 
     test_labels = labels.to(device)
     test_images = images.to(device)
 
-    outputs = cnn(test_images).to(device)
+    outputs = net(test_images).to(device)
     predicts = torch.max(outputs, 1)[1]
 
     plt.figure(figsize=(21, 15))
@@ -366,7 +307,7 @@ def show_result(cnn: CNN, valid_loader: DataLoader, device):
 
 
 # %%
-def get_predict(path: str, cnn: CNN, device):
+def get_predict(path: str, net: ResNet, device):
     transform = transforms.Compose([
         transforms.Resize((320, 320)),
         transforms.ToTensor(),
@@ -377,10 +318,10 @@ def get_predict(path: str, cnn: CNN, device):
     image = transform(image)
     image = image.unsqueeze(0).to(device)
 
-    cnn.to(device)
-    cnn.eval()
+    net.to(device)
+    net.eval()
 
-    output = cnn(image)
+    output = net(image)
     output = output.tolist()[0]
     output = list(enumerate(output))
     output = sorted(output, key=lambda x: x[1], reverse=True)
@@ -397,18 +338,18 @@ def train():
 
     print(f"train data: {len(train_datasets)}, valid data: {len(valid_datasets)}")
 
-    cnn = CNN(N_INPUT, N_OUTPUT, N_HIDDEN)
+    net = ResNet(DiffBlock, N_OUTPUT)
     criterion = nn.CrossEntropyLoss()
-    optimizer = optim.RAdam(cnn.parameters(), lr=LEARNING_RATE, betas=(0.9, 0.999))
+    optimizer = optim.RAdam(net.parameters(), lr=LEARNING_RATE, betas=(0.9, 0.999))
 
-    history = train_model(cnn, train_loader, valid_loader, criterion, optimizer, device)
+    history = train_model(net, train_loader, valid_loader, criterion, optimizer, device)
 
     save_path = f"./weights/weight-{int(time.time())}.pth"
-    torch.save(cnn.state_dict(), save_path)
+    torch.save(net.state_dict(), save_path)
 
     show_loss_carve(history)
     show_accuracy_graph(history)
-    show_result(cnn, valid_loader, device)
+    show_result(net, valid_loader, device)
 
 
 # %%
@@ -418,8 +359,8 @@ def predict():
     pth_path = "E:\IntelliJ\Projects\KCS\TrumpRecognition-CNN\weights\weight-1655617999.pth"
 
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
-    cnn = CNN(N_INPUT, N_OUTPUT, N_HIDDEN)
-    cnn.load_state_dict(torch.load(pth_path))
+    net = ResNet(DiffBlock, N_OUTPUT)
+    net.load_state_dict(torch.load(pth_path))
 
     while True:
         print("Enter the path of the image to predict > ", end="")
@@ -429,17 +370,18 @@ def predict():
             print("Ended the process.")
             break
 
-        result = get_predict(image_path, cnn, device)
+        result = get_predict(image_path, net, device)
         print(f"Result > {list(map(lambda x: (CATS[x[0]], x[1]), result[:5]))}")
 
 
 # %%
 def info():
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
-    cnn = CNN(N_INPUT, N_OUTPUT, N_HIDDEN).to(device)
+    net = ResNet(DiffBlock, N_OUTPUT).to(device)
+    tensor = torch.FloatTensor(1, 3, IMAGE_SIZE[0], IMAGE_SIZE[1]).to(device)
 
-    print(cnn.check_cnn_size(torch.FloatTensor(1, 3, IMAGE_SIZE[0], IMAGE_SIZE[1]).to(device)))
-    print(summary(model=cnn, input_size=(5, 3, IMAGE_SIZE[0], IMAGE_SIZE[1])))
+    print(net(tensor).to(device).shape)
+    print(summary(model=net, input_size=(5, 3, IMAGE_SIZE[0], IMAGE_SIZE[1])))
 
 
 # %%
