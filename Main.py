@@ -1,3 +1,4 @@
+import datetime
 from typing import Tuple
 
 import numpy
@@ -22,7 +23,8 @@ from torchvision.transforms import Compose
 from PIL import Image
 from tqdm import tqdm
 
-from CocoDataset import CocoDataset
+from Model import ResNet
+from Model import DiffBlock
 from FReLU import FReLU
 
 CATS = ['10C', '10D', '10H', '10S', '11C', '11D', '11H', '11S', '12C', '12D', '12H', '12S', '13C', '13D', '13H', '13S', '1C', '1D', '1H', '1S', '2C',
@@ -30,18 +32,12 @@ CATS = ['10C', '10D', '10H', '10S', '11C', '11D', '11H', '11S', '12C', '12D', '1
         '8C', '8D', '8H', '8S', '9C', '9D', '9H', '9S']
 
 IMAGE_SIZE = (224, 224)
-BATCH_SIZE = 64
-LEARNING_RATE = 0.001
-MOMENTUM = 0.9
-WEIGHT_DECAY = 0.005
-EPOCHS = 50
-
-N_INPUT = 160
-N_HIDDEN = 256
+BATCH_SIZE = 50
+LEARNING_RATE = 0.01
+EPOCHS = 100
 N_OUTPUT = 52
 
 
-# %%
 def get_transform(is_train) -> Compose:
     if is_train:
         return transforms.Compose([
@@ -59,114 +55,26 @@ def get_transform(is_train) -> Compose:
         ])
 
 
-# %%
-def get_datasets() -> Tuple[ImageFolder, ImageFolder]:
+def get_datasets():
     train_dir = "./dataset/train"
     valid_dir = "./dataset/valid"
 
     train_datasets = ImageFolder(root=train_dir, transform=get_transform(True))
     valid_datasets = ImageFolder(root=valid_dir, transform=get_transform(False))
 
+    # train_datasets = datasets.CIFAR10(train_dir, train=True, download=True, transform=get_transform(True))
+    # valid_datasets = datasets.CIFAR10(valid_dir, train=False, download=True, transform=get_transform(False))
+
     return train_datasets, valid_datasets
 
 
-# %%
 def get_dataloader(train_datasets, valid_datasets, batch_size) -> Tuple[DataLoader, DataLoader]:
     train_loader = DataLoader(train_datasets, batch_size=batch_size, num_workers=4, pin_memory=True, shuffle=True)
-    valid_loader = DataLoader(valid_datasets, batch_size=batch_size, num_workers=4, pin_memory=True, shuffle=True)
+    valid_loader = DataLoader(valid_datasets, batch_size=batch_size, num_workers=4, pin_memory=True)
 
     return train_loader, valid_loader
 
 
-# %%
-def get_cats(coco_datasets: CocoDataset):
-    return list(map(lambda x: x[1]["name"], coco_datasets.coco.cats.items()))
-
-
-# %%
-class Conv(nn.Module):
-    def __init__(self, in_ch, out_ch, activation, kernel_size=1, stride=1, padding=0):
-        super().__init__()
-        self.conv = nn.Conv2d(in_ch, out_ch, kernel_size, stride, padding, bias=False)
-        self.norm = nn.BatchNorm2d(out_ch)
-        self.relu = activation
-
-    def forward(self, x):
-        return self.relu(self.norm(self.conv(x))) if self.relu is not None else self.norm(self.conv(x))
-
-
-class DiffBlock(nn.Module):
-    def __init__(self, conv_input_ch, conv_output_ch, identity_conv=None, stride=1):
-        super(DiffBlock, self).__init__()
-
-        self.conv1 = Conv(conv_input_ch, conv_output_ch, nn.ReLU(), kernel_size=1, stride=1)
-        self.conv2 = Conv(conv_output_ch, conv_output_ch, nn.ReLU(), kernel_size=3, stride=stride, padding=1)
-        self.conv3 = Conv(conv_output_ch, conv_output_ch * 4, None, kernel_size=1, stride=1)
-        self.relu = nn.ReLU()
-        self.identity_conv = identity_conv
-
-    def forward(self, x):
-        identity = x.clone()
-
-        x = self.conv1(x)
-        x = self.conv2(x)
-        x = self.conv3(x)
-
-        if self.identity_conv is not None:
-            identity = self.identity_conv(identity)
-
-        x += identity
-
-        return self.relu(x)
-
-
-class ResNet(nn.Module):
-    def __init__(self, diff_block, n_classes):
-        super(ResNet, self).__init__()
-
-        self.input_channels = 64
-
-        self.conv1 = Conv(3, 64, nn.ReLU(), kernel_size=7, stride=2, padding=3)
-        self.conv2_x = self.get_layer(diff_block, n_blocks=3, first_conv_output_ch=64, stride=1)
-        self.conv3_x = self.get_layer(diff_block, n_blocks=4, first_conv_output_ch=128, stride=2)
-        self.conv4_x = self.get_layer(diff_block, n_blocks=6, first_conv_output_ch=256, stride=2)
-        self.conv5_x = self.get_layer(diff_block, n_blocks=3, first_conv_output_ch=512, stride=2)
-
-        self.max_pooling = nn.MaxPool2d(kernel_size=3, stride=2, padding=1)
-        self.avg_pooling = nn.AdaptiveAvgPool2d((1, 1))
-
-        self.linear = nn.Linear(512 * 4, n_classes)
-
-    def forward(self, x):
-        x = self.conv1(x)
-        x = self.max_pooling(x)
-
-        x = self.conv2_x(x)
-        x = self.conv3_x(x)
-        x = self.conv4_x(x)
-        x = self.conv5_x(x)
-
-        x = self.avg_pooling(x)
-        x = x.reshape(x.shape[0], -1)
-        x = self.linear(x)
-
-        return x
-
-    def get_layer(self, diff_block, n_blocks, first_conv_output_ch, stride):
-        layers = list()
-
-        identity_conv = nn.Conv2d(self.input_channels, first_conv_output_ch * 4, kernel_size=1, stride=stride)
-        layers.append(diff_block(self.input_channels, first_conv_output_ch, identity_conv=identity_conv, stride=stride))
-
-        self.input_channels = first_conv_output_ch * 4
-
-        for i in range(n_blocks - 1):
-            layers.append(diff_block(self.input_channels, first_conv_output_ch))
-
-        return nn.Sequential(*layers)
-
-
-# %%
 def train_model(
         net: ResNet,
         train_loader: DataLoader,
@@ -204,33 +112,33 @@ def train_model(
 
             predicted = torch.max(outputs, 1)[1]
 
-            train_acc += (predicted == labels).sum().item()
             train_loss += loss.item()
+            train_acc += (predicted == labels).sum().item()
 
         net.eval()
 
-        for v_inputs, v_labels in valid_loader:
-            num_tested += len(v_labels)
+        for valid_inputs, valid_labels in valid_loader:
+            num_tested += len(valid_labels)
 
-            v_inputs = v_inputs.to(device)
-            v_labels = v_labels.to(device)
+            valid_inputs = valid_inputs.to(device)
+            valid_labels = valid_labels.to(device)
 
             with amp.autocast():
-                v_outputs = net(v_inputs).to(device)
-                v_loss = criterion(v_outputs, v_labels)
+                valid_outputs = net(valid_inputs).to(device)
+                loss = criterion(valid_outputs, valid_labels)
 
-            v_predicted = torch.max(v_outputs, 1)[1]
+            valid_predicted = torch.max(valid_outputs, 1)[1]
 
-            valid_acc += (v_predicted == v_labels).sum().item()
-            valid_loss += v_loss.item()
+            valid_loss += loss.item()
+            valid_acc += (valid_predicted == valid_labels).sum().item()
 
         train_acc /= num_trained
-        train_loss *= (BATCH_SIZE / num_trained)
-
         valid_acc /= num_tested
+
+        train_loss *= (BATCH_SIZE / num_trained)
         valid_loss *= (BATCH_SIZE / num_tested)
 
-        print(f"Epoch [{epoch + 1}/{EPOCHS}, loss: {train_loss:.5f}, acc: {train_acc:.5f}, valid loss: {valid_loss:.5f}, valid acc: {valid_acc:.5f} (trained: {num_trained}, tested: {num_tested})")
+        print(f"Epoch [{epoch + 1}/{EPOCHS}, loss: {train_loss:.5f}, acc: {train_acc:.5f}, valid loss: {valid_loss:.5f}, valid acc: {valid_acc:.5f}")
 
         items = np.array([epoch, train_loss, train_acc, valid_loss, valid_acc])
         history = np.vstack((history, items))
@@ -242,7 +150,6 @@ def train_model(
     return history
 
 
-# %%
 def show_loss_carve(history: numpy.ndarray):
     plt.rcParams["figure.figsize"] = (8, 6)
     plt.plot(history[:, 0], history[:, 1], "b", label="train")
@@ -252,11 +159,10 @@ def show_loss_carve(history: numpy.ndarray):
     plt.title("loss carve")
     plt.legend()
 
-    plt.savefig(f"./result/loss-{int(time.time())}.jpg")
+    plt.savefig(f"./result/loss-{get_time()}.jpg")
     plt.show()
 
 
-# %%
 def show_accuracy_graph(history: numpy.ndarray):
     plt.rcParams["figure.figsize"] = (8, 6)
     plt.plot(history[:, 0], history[:, 2], "b", label="train")
@@ -266,11 +172,10 @@ def show_accuracy_graph(history: numpy.ndarray):
     plt.title("accuracy")
     plt.legend()
 
-    plt.savefig(f"./result/accuracy-{int(time.time())}.jpg")
+    plt.savefig(f"./result/accuracy-{get_time()}.jpg")
     plt.show()
 
 
-# %%
 def show_result(net: ResNet, valid_loader: DataLoader, device):
     for images, labels in valid_loader:
         break
@@ -302,16 +207,16 @@ def show_result(net: ResNet, valid_loader: DataLoader, device):
         plt.imshow(image)
         ax.set_axis_off()
 
-    plt.savefig(f"./result/result-{int(time.time())}.jpg")
+    plt.savefig(f"./result/result-{get_time()}.jpg")
     plt.show()
 
 
-# %%
+def get_time():
+    return datetime.datetime.now().strftime("%Y-%m-%d-%H-%M-%S")
+
+
 def get_predict(path: str, net: ResNet, device):
-    transform = transforms.Compose([
-        transforms.Resize((320, 320)),
-        transforms.ToTensor(),
-    ])
+    transform = get_transform(False)
 
     image = Image.open(path)
     image = image.convert("RGB")
@@ -329,7 +234,6 @@ def get_predict(path: str, net: ResNet, device):
     return output
 
 
-# %%
 def train():
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
@@ -340,7 +244,7 @@ def train():
 
     net = ResNet(DiffBlock, N_OUTPUT)
     criterion = nn.CrossEntropyLoss()
-    optimizer = optim.SGD(net.parameters(), lr=LEARNING_RATE, momentum=MOMENTUM)
+    optimizer = optim.SGD(net.parameters(), lr=LEARNING_RATE)
 
     history = train_model(net, train_loader, valid_loader, criterion, optimizer, device)
 
@@ -352,7 +256,6 @@ def train():
     show_result(net, valid_loader, device)
 
 
-# %%
 def predict():
     # print("Enter the path of the PTH file > ", end="")
     # pth_path = input().strip()
@@ -374,7 +277,6 @@ def predict():
         print(f"Result > {list(map(lambda x: (CATS[x[0]], x[1]), result[:7]))}")
 
 
-# %%
 def info():
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
     net = ResNet(DiffBlock, N_OUTPUT).to(device)
@@ -384,7 +286,6 @@ def info():
     print(summary(model=net, input_size=(BATCH_SIZE, 3, IMAGE_SIZE[0], IMAGE_SIZE[1])))
 
 
-# %%
 def main():
     print("Choose mode predict mode [P], train mode [T] or info mode [I]: > ", end="")
     mode = input().strip()
@@ -399,6 +300,5 @@ def main():
         print("Invalid input. ")
 
 
-# %%
 if __name__ == "__main__":
     main()
