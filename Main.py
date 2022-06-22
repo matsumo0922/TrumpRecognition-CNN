@@ -40,6 +40,25 @@ EPOCHS = 75
 N_OUTPUT = 52
 
 
+def get_device():
+    if not torch.cuda.is_available():
+        return torch.device("cpu")
+
+    n_device = torch.cuda.device_count()
+
+    if n_device == 1:
+        return torch.device("cuda:0")
+
+    devices = list(map(lambda i: f"cuda:{i[0]}", enumerate([None] * n_device)))
+    device_names = list(map(lambda x: torch.cuda.get_device_name(x), devices))
+
+    print(f"Find any GPU -> {device_names}")
+    print("Please enter the index of the GPU to use (1~) > ", end="")
+    index = int(input().strip())
+
+    return torch.device(devices[index - 1])
+
+
 def get_transform(is_train) -> Compose:
     if is_train:
         return transforms.Compose([
@@ -275,7 +294,7 @@ def train():
     os.makedirs(result_path, exist_ok=True)
 
     log = PrintLog(result_path + "/log.txt")
-    device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+    device = get_device()
 
     train_datasets, valid_datasets = get_datasets()
     train_loader, valid_loader = get_dataloader(train_datasets, valid_datasets, BATCH_SIZE)
@@ -299,7 +318,7 @@ def predict():
     # pth_path = input().strip()
     pth_path = "E:\IntelliJ\Projects\KCS\TrumpRecognition-CNN\weights\weight-2022-06-22-12-42-33.pth"
 
-    device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+    device = get_device()
     net = ResNet(DiffBlock, N_OUTPUT)
     net.load_state_dict(torch.load(pth_path))
 
@@ -320,7 +339,7 @@ def predict():
 
 
 def info():
-    device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+    device = get_device()
     net = ResNet(DiffBlock, N_OUTPUT).to(device)
     tensor = torch.FloatTensor(1, 3, IMAGE_SIZE[0], IMAGE_SIZE[1]).to(device)
 
