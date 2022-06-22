@@ -34,6 +34,7 @@ CATS = ['10C', '10D', '10H', '10S', '11C', '11D', '11H', '11S', '12C', '12D', '1
 IMAGE_SIZE = (224, 224)
 BATCH_SIZE = 50
 LEARNING_RATE = 0.01
+MOMENTUM = 0.9
 EPOCHS = 100
 N_OUTPUT = 52
 
@@ -44,7 +45,9 @@ def get_transform(is_train) -> Compose:
             transforms.Resize(IMAGE_SIZE),
             transforms.ToTensor(),
             transforms.Normalize(0.5, 0.5),
-            # transforms.RandomErasing(0.5, scale=(0.02, 0.3), ratio=(0.3, 0.3)),
+            transforms.RandomErasing(0.5, scale=(0.02, 0.3), ratio=(0.3, 0.3)),
+            transforms.RandomHorizontalFlip(0.4),
+            transforms.RandomVerticalFlip(0.4)
             # transforms.RandomPerspective(distortion_scale=0.3, p=0.2)
         ])
     else:
@@ -70,7 +73,7 @@ def get_datasets():
 
 def get_dataloader(train_datasets, valid_datasets, batch_size) -> Tuple[DataLoader, DataLoader]:
     train_loader = DataLoader(train_datasets, batch_size=batch_size, num_workers=4, pin_memory=True, shuffle=True)
-    valid_loader = DataLoader(valid_datasets, batch_size=batch_size, num_workers=4, pin_memory=True)
+    valid_loader = DataLoader(valid_datasets, batch_size=batch_size, num_workers=4, pin_memory=True, shuffle=True)
 
     return train_loader, valid_loader
 
@@ -244,11 +247,11 @@ def train():
 
     net = ResNet(DiffBlock, N_OUTPUT)
     criterion = nn.CrossEntropyLoss()
-    optimizer = optim.SGD(net.parameters(), lr=LEARNING_RATE)
+    optimizer = optim.SGD(net.parameters(), lr=LEARNING_RATE, momentum=MOMENTUM)
 
     history = train_model(net, train_loader, valid_loader, criterion, optimizer, device)
 
-    save_path = f"./weights/weight-{int(time.time())}.pth"
+    save_path = f"./weights/weight-{get_time()}.pth"
     torch.save(net.state_dict(), save_path)
 
     show_loss_carve(history)
@@ -259,7 +262,7 @@ def train():
 def predict():
     # print("Enter the path of the PTH file > ", end="")
     # pth_path = input().strip()
-    pth_path = "E:\IntelliJ\Projects\KCS\TrumpRecognition-CNN\weights\weight-1655617999.pth"
+    pth_path = "E:\IntelliJ\Projects\KCS\TrumpRecognition-CNN\weights\weight-1655847276.pth"
 
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
     net = ResNet(DiffBlock, N_OUTPUT)
