@@ -25,6 +25,7 @@ from tqdm import tqdm
 
 from Model import ResNet
 from Model import DiffBlock
+from PrintLog import PrintLog
 from FReLU import FReLU
 
 CATS = ['10C', '10D', '10H', '10S', '11C', '11D', '11H', '11S', '12C', '12D', '12H', '12S', '13C', '13D', '13H', '13S', '1C', '1D', '1H', '1S', '2C',
@@ -35,7 +36,7 @@ IMAGE_SIZE = (224, 224)
 BATCH_SIZE = 50
 LEARNING_RATE = 0.01
 MOMENTUM = 0.9
-EPOCHS = 100
+EPOCHS = 75
 N_OUTPUT = 52
 
 
@@ -47,8 +48,10 @@ def get_transform(is_train) -> Compose:
             transforms.Normalize(0.5, 0.5),
             transforms.RandomErasing(0.5, scale=(0.02, 0.3), ratio=(0.3, 0.3)),
             transforms.RandomHorizontalFlip(0.4),
-            transforms.RandomVerticalFlip(0.4)
-            # transforms.RandomPerspective(distortion_scale=0.3, p=0.2)
+            transforms.RandomVerticalFlip(0.4),
+            transforms.RandomApply([transforms.GaussianBlur(3)], 0.2),
+            # transforms.RandomApply([transforms.Grayscale()], 0.2),
+            transforms.RandomApply([transforms.ColorJitter(brightness=0.6, contrast=0.6)], 0.2),
         ])
     else:
         return transforms.Compose([
@@ -84,13 +87,17 @@ def train_model(
         valid_loader: DataLoader,
         criterion: nn.CrossEntropyLoss,
         optimizer: optim.Optimizer,
-        device: torch.device
+        device: torch.device,
+        outputs_path: str,
+        logger: PrintLog
 ):
+    start_time = time.perf_counter()
     history = np.zeros((0, 5))
     scaler = amp.GradScaler()
     net.to(device)
 
     for epoch in range(EPOCHS):
+
         train_acc, train_loss = 0.0, 0.0
         valid_acc, valid_loss = 0.0, 0.0
         num_trained, num_tested = 0.0, 0.0
@@ -141,19 +148,28 @@ def train_model(
         train_loss *= (BATCH_SIZE / num_trained)
         valid_loss *= (BATCH_SIZE / num_tested)
 
-        print(f"Epoch [{epoch + 1}/{EPOCHS}, loss: {train_loss:.5f}, acc: {train_acc:.5f}, valid loss: {valid_loss:.5f}, valid acc: {valid_acc:.5f}")
+        end_time = time.perf_counter()
+        elapsed_time = end_time - start_time
+        eta = get_time_from_sec((elapsed_time / (epoch + 1)) * (EPOCHS - (epoch + 1)))
+
+        message = f"Epoch [{epoch + 1}/{EPOCHS}] "
+        message += f"loss: {train_loss:.5f}, acc: {train_acc:.5f}, valid loss: {valid_loss:.5f}, valid acc: {valid_acc:.5f} "
+        message += f"[ETA: {str(eta[0]).zfill(2)}:{str(eta[1]).zfill(2)}:{str(eta[2]).zfill(2)}]"
+
+        logger.println(message)
 
         items = np.array([epoch, train_loss, train_acc, valid_loss, valid_acc])
         history = np.vstack((history, items))
 
-        if (epoch + 1) % 10 == 0:
-            show_loss_carve(history)
-            show_accuracy_graph(history)
+        if (epoch + 1) % 5 == 0 and (epoch + 1) != EPOCHS:
+            save_weight(outputs_path, epoch, net)
+            show_loss_carve(outputs_path, epoch, history)
+            show_accuracy_graph(outputs_path, epoch, history)
 
     return history
 
 
-def show_loss_carve(history: numpy.ndarray):
+def show_loss_carve(parent_path, epoch, history: numpy.ndarray):
     plt.rcParams["figure.figsize"] = (8, 6)
     plt.plot(history[:, 0], history[:, 1], "b", label="train")
     plt.plot(history[:, 0], history[:, 3], "k", label="valid")
@@ -162,11 +178,11 @@ def show_loss_carve(history: numpy.ndarray):
     plt.title("loss carve")
     plt.legend()
 
-    plt.savefig(f"./result/loss-{get_time()}.jpg")
+    plt.savefig(f"{parent_path}/loss-epoch-{epoch}.jpg")
     plt.show()
 
 
-def show_accuracy_graph(history: numpy.ndarray):
+def show_accuracy_graph(parent_path, epoch, history: numpy.ndarray):
     plt.rcParams["figure.figsize"] = (8, 6)
     plt.plot(history[:, 0], history[:, 2], "b", label="train")
     plt.plot(history[:, 0], history[:, 4], "k", label="valid")
@@ -175,11 +191,11 @@ def show_accuracy_graph(history: numpy.ndarray):
     plt.title("accuracy")
     plt.legend()
 
-    plt.savefig(f"./result/accuracy-{get_time()}.jpg")
+    plt.savefig(f"{parent_path}/accuracy-epoch-{epoch}.jpg")
     plt.show()
 
 
-def show_result(net: ResNet, valid_loader: DataLoader, device):
+def show_result(net: ResNet, valid_loader: DataLoader, device, parent_path):
     for images, labels in valid_loader:
         break
 
@@ -210,12 +226,28 @@ def show_result(net: ResNet, valid_loader: DataLoader, device):
         plt.imshow(image)
         ax.set_axis_off()
 
-    plt.savefig(f"./result/result-{get_time()}.jpg")
+    plt.savefig(f"{parent_path}/result.jpg")
     plt.show()
+
+
+def save_weight(parent_path, epoch, model):
+    save_dir = f"{parent_path}/weights"
+    save_path = f"{save_dir}/weight-epoch-{epoch}.pth"
+
+    os.makedirs(save_dir, exist_ok=True)
+    torch.save(model.state_dict(), save_path)
 
 
 def get_time():
     return datetime.datetime.now().strftime("%Y-%m-%d-%H-%M-%S")
+
+
+def get_time_from_sec(sec) -> Tuple[int, int, int]:
+    timedelta = datetime.timedelta(seconds=sec)
+    m, s = divmod(timedelta.seconds, 60)
+    h, m = divmod(m, 60)
+
+    return h, m, s
 
 
 def get_predict(path: str, net: ResNet, device):
@@ -238,31 +270,34 @@ def get_predict(path: str, net: ResNet, device):
 
 
 def train():
+    time_id = get_time()
+    result_path = f"./results/{time_id}"
+    os.makedirs(result_path, exist_ok=True)
+
+    log = PrintLog(result_path + "/log.txt")
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
     train_datasets, valid_datasets = get_datasets()
     train_loader, valid_loader = get_dataloader(train_datasets, valid_datasets, BATCH_SIZE)
 
-    print(f"train data: {len(train_datasets)}, valid data: {len(valid_datasets)}")
+    log.println(f"train data: {len(train_datasets)}, valid data: {len(valid_datasets)}")
 
     net = ResNet(DiffBlock, N_OUTPUT)
     criterion = nn.CrossEntropyLoss()
     optimizer = optim.SGD(net.parameters(), lr=LEARNING_RATE, momentum=MOMENTUM)
 
-    history = train_model(net, train_loader, valid_loader, criterion, optimizer, device)
+    history = train_model(net, train_loader, valid_loader, criterion, optimizer, device, result_path, log)
 
-    save_path = f"./weights/weight-{get_time()}.pth"
-    torch.save(net.state_dict(), save_path)
-
-    show_loss_carve(history)
-    show_accuracy_graph(history)
-    show_result(net, valid_loader, device)
+    save_weight(result_path, "finish", net)
+    show_loss_carve(result_path, "finish", history)
+    show_accuracy_graph(result_path, "finish", history)
+    show_result(net, valid_loader, device, result_path)
 
 
 def predict():
     # print("Enter the path of the PTH file > ", end="")
     # pth_path = input().strip()
-    pth_path = "E:\IntelliJ\Projects\KCS\TrumpRecognition-CNN\weights\weight-1655847276.pth"
+    pth_path = "E:\IntelliJ\Projects\KCS\TrumpRecognition-CNN\weights\weight-2022-06-22-12-42-33.pth"
 
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
     net = ResNet(DiffBlock, N_OUTPUT)
@@ -277,7 +312,11 @@ def predict():
             break
 
         result = get_predict(image_path, net, device)
-        print(f"Result > {list(map(lambda x: (CATS[x[0]], x[1]), result[:7]))}")
+        rate_sum = sum(list(map(lambda x: x[1], result)))
+        take_list = list(map(lambda x: (CATS[x[0]], x[1]), result[:7]))
+
+        for trump, rate in take_list:
+            print(f"{trump}, {(rate / rate_sum) * 100}%, {rate}")
 
 
 def info():
